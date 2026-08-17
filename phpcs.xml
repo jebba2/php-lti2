@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<ruleset name="php-lti">
+    <description>Coding standard for the LTI 1.3 tool backend library.</description>
+
+    <arg name="cache" value="working/phpcs-cache.json"/>
+    <arg name="colors"/>
+    <arg value="p"/>
+
+    <file>src</file>
+    <file>tests</file>
+    <file>bin</file>
+
+    <rule ref="PSR12"/>
+
+    <config name="php_version" value="80100"/>
+</ruleset>

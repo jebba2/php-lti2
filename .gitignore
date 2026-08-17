@@ -1,0 +1,6 @@
+/vendor/
+/working/
+/composer.lock
+.DS_Store
+CLAUDE.MD
+.claude
