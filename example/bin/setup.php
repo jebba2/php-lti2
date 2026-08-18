@@ -45,6 +45,11 @@ return [
     'deployment_id' => 'demo-deployment-1',
     'tool_kid' => '{$toolKid}',
     'simulator_kid' => '{$simulatorKid}',
+    // Optional: audience ("aud") for the client assertion sent to the token
+    // endpoint. Omit it to use the token url, which is the spec default and
+    // what nearly every platform expects. Set it only for a platform that
+    // demands a fixed audience of its own; the simulator honours it too.
+    // 'platform_audience' => 'https://platform.example.com/api/lti/authorize',
 ];
 PHP;
 

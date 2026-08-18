@@ -59,6 +59,7 @@ final class Bootstrap
             $simulatorBaseUrl . '/token',
             $simulatorBaseUrl . '/jwks',
             [$toolKeyPair],
+            $config['platform_audience'] ?? null,
         );
     }
 

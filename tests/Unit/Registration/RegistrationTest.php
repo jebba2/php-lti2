@@ -28,6 +28,7 @@ final class RegistrationTest extends TestCase
         string $tokenUrl = 'https://example.brightspace.com/core/connect/token',
         string $jwksUrl = 'https://example.brightspace.com/d2l/.well-known/jwks',
         ?array $toolKeyPairs = null,
+        ?string $platformAudience = null,
     ): Registration {
         return new Registration(
             $issuer,
@@ -37,7 +38,42 @@ final class RegistrationTest extends TestCase
             $tokenUrl,
             $jwksUrl,
             $toolKeyPairs ?? [$this->keyPair()],
+            $platformAudience,
         );
+    }
+
+    public function testPlatformAudienceDefaultsToTheTokenUrl(): void
+    {
+        $registration = $this->makeRegistration();
+
+        self::assertNull($registration->platformAudience);
+        self::assertSame(
+            'https://example.brightspace.com/core/connect/token',
+            $registration->accessTokenAudience(),
+        );
+    }
+
+    public function testConfiguredPlatformAudienceOverridesTheTokenUrl(): void
+    {
+        $registration = $this->makeRegistration(platformAudience: 'https://platform.example.com/api/lti/authorize');
+
+        self::assertSame('https://platform.example.com/api/lti/authorize', $registration->platformAudience);
+        self::assertSame('https://platform.example.com/api/lti/authorize', $registration->accessTokenAudience());
+    }
+
+    public function testPlatformAudienceNeedNotBeAUrl(): void
+    {
+        $registration = $this->makeRegistration(platformAudience: 'platform-audience-identifier');
+
+        self::assertSame('platform-audience-identifier', $registration->accessTokenAudience());
+    }
+
+    public function testRejectsBlankPlatformAudience(): void
+    {
+        $this->expectException(InvalidRegistrationException::class);
+        $this->expectExceptionMessage('platformAudience must not be empty');
+
+        $this->makeRegistration(platformAudience: '   ');
     }
 
     public function testConstructsWithValidValues(): void

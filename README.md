@@ -102,6 +102,27 @@ if ($message instanceof LtiResourceLinkRequest) {
 
 `$jwtValidator` is a `PhpLti\Lti1p3\Security\Jwt\JwtValidator`, constructed from a `JwksFetcher` (which needs your PSR-18 client + PSR-17 request factory + PSR-16 cache) and your nonce-tracking cache.
 
+### Configurable access-token audience
+
+When the library requests a service access token, it signs a client assertion whose `aud` claim is, per the 1EdTech Security Framework, the platform's token endpoint. That is the default and covers Brightspace and most other platforms, so leave it alone unless a platform documents otherwise.
+
+Some platforms expect a different, fixed audience (Canvas, for instance, wants `https://canvas.instructure.com/login/oauth2/token` regardless of the region-specific token url you actually POST to). Pass the optional final `Registration` argument to override it:
+
+```php
+$registration = new Registration(
+    $issuer,
+    $clientId,
+    $deploymentIds,
+    $platformAuthenticationLoginUrl,
+    $platformAuthenticationTokenUrl,
+    $platformJwksUrl,
+    $toolKeyPairs,
+    platformAudience: 'https://canvas.instructure.com/login/oauth2/token', // optional
+);
+```
+
+Only the `aud` claim changes — the token request still goes to `platformAuthenticationTokenUrl`. `$registration->accessTokenAudience()` returns whichever value is in effect, and `$registration->platformAudience` is `null` when no override is configured. The audience is not required to be a URL and is not subject to the HTTPS check the endpoint urls get, since some platforms use an opaque identifier; it just can't be an empty string.
+
 ### 6. Call back into the platform (AGS / NRPS)
 
 ```php
@@ -190,6 +211,7 @@ Brightspace returns the values you need to build your `Registration` object:
 | `BrightspaceOIDCAuthenticationEndpoint` | `platformAuthenticationLoginUrl` |
 | `BrightspaceOAuth2AccessTokenUrl` | `platformAuthenticationTokenUrl` |
 | `BrightspaceKeysetUrl` | `platformJwksUrl` |
+| (not supplied — Brightspace uses the token url) | `platformAudience` (optional, defaults to the token url) |
 
 Brightspace's JWKS endpoint conventionally looks like `https://<your-subdomain>.brightspace.com/d2l/.well-known/jwks`. A `Deployment`'s `EnabledExtensions` array declares which Advantage services are active for it (AGS, Deep Linking, NRPS are the ones this library supports; Deep Linking is always enabled as of recent Brightspace versions regardless of what's requested).
 

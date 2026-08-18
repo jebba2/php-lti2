@@ -109,7 +109,7 @@ final class AccessTokenService
         $claims = [
             'iss' => $registration->clientId,
             'sub' => $registration->clientId,
-            'aud' => $registration->platformAuthenticationTokenUrl,
+            'aud' => $registration->accessTokenAudience(),
             'iat' => $now,
             'exp' => $now + self::CLIENT_ASSERTION_TTL_SECONDS,
             'jti' => bin2hex(random_bytes(16)),

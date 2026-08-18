@@ -42,7 +42,7 @@ final class AccessTokenServiceTest extends TestCase
         return $this->toolKeyPair ??= (new KeyPairGenerator())->generate('tool-kid');
     }
 
-    private function registration(): Registration
+    private function registration(?string $platformAudience = null): Registration
     {
         return new Registration(
             self::ISSUER,
@@ -52,6 +52,7 @@ final class AccessTokenServiceTest extends TestCase
             $this->server()->baseUrl() . '/token',
             self::ISSUER . '/d2l/.well-known/jwks',
             [$this->toolKeyPair()],
+            $platformAudience,
         );
     }
 
@@ -115,6 +116,27 @@ final class AccessTokenServiceTest extends TestCase
         self::assertIsInt($claims->iat);
         self::assertIsInt($claims->exp);
         self::assertGreaterThan($claims->iat, $claims->exp);
+    }
+
+    public function testClientAssertionUsesTheConfiguredAudienceWhenRegistrationSetsOne(): void
+    {
+        $this->queueTokenResponse(['access_token' => 'token-abc', 'expires_in' => 3600]);
+        $audience = 'https://platform.example.com/api/lti/authorize';
+        $registration = $this->registration($audience);
+
+        $this->service()->getAccessToken($registration, ['scope-a']);
+
+        $requests = $this->server()->receivedRequests('POST', '/token');
+        parse_str($requests[0]['body'], $sent);
+
+        $clientAssertion = $sent['client_assertion'];
+        self::assertIsString($clientAssertion);
+
+        $keySet = JWK::parseKeySet((new JwksBuilder())->build($registration), 'RS256');
+        $claims = JWT::decode($clientAssertion, $keySet);
+
+        self::assertSame($audience, $claims->aud);
+        self::assertNotSame($registration->platformAuthenticationTokenUrl, $claims->aud);
     }
 
     public function testCachesTheAccessTokenAndDoesNotRequestASecondTokenForTheSameScopes(): void

@@ -51,6 +51,7 @@ Manual verification checklist for this library, kept current alongside the autom
 ## Assignment and Grades Service (AGS)
 
 - [x] Access token is requested via client_credentials JWT-bearer grant against the fixture token endpoint and cached (client assertion is a real signed JWT, verified against the tool's own JWKS)
+- [x] Client assertion `aud` defaults to the platform token url, and uses the configured `platformAudience` override when the registration sets one
 - [x] Line item create/read/update/delete against the fixture AGS endpoint
 - [x] Score publish against the fixture AGS endpoint (correct `activityProgress`/`gradingProgress` values, Bearer token sent)
 - [x] Result read against the fixture AGS endpoint

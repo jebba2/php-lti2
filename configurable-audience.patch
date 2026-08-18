@@ -1,0 +1,290 @@
+diff --git a/README.md b/README.md
+index ab9eea9..2148f53 100644
+--- a/README.md
++++ b/README.md
+@@ -102,6 +102,27 @@ if ($message instanceof LtiResourceLinkRequest) {
+ 
+ `$jwtValidator` is a `PhpLti\Lti1p3\Security\Jwt\JwtValidator`, constructed from a `JwksFetcher` (which needs your PSR-18 client + PSR-17 request factory + PSR-16 cache) and your nonce-tracking cache.
+ 
++### Configurable access-token audience
++
++When the library requests a service access token, it signs a client assertion whose `aud` claim is, per the 1EdTech Security Framework, the platform's token endpoint. That is the default and covers Brightspace and most other platforms, so leave it alone unless a platform documents otherwise.
++
++Some platforms expect a different, fixed audience (Canvas, for instance, wants `https://canvas.instructure.com/login/oauth2/token` regardless of the region-specific token url you actually POST to). Pass the optional final `Registration` argument to override it:
++
++```php
++$registration = new Registration(
++    $issuer,
++    $clientId,
++    $deploymentIds,
++    $platformAuthenticationLoginUrl,
++    $platformAuthenticationTokenUrl,
++    $platformJwksUrl,
++    $toolKeyPairs,
++    platformAudience: 'https://canvas.instructure.com/login/oauth2/token', // optional
++);
++```
++
++Only the `aud` claim changes — the token request still goes to `platformAuthenticationTokenUrl`. `$registration->accessTokenAudience()` returns whichever value is in effect, and `$registration->platformAudience` is `null` when no override is configured. The audience is not required to be a URL and is not subject to the HTTPS check the endpoint urls get, since some platforms use an opaque identifier; it just can't be an empty string.
++
+ ### 6. Call back into the platform (AGS / NRPS)
+ 
+ ```php
+@@ -190,6 +211,7 @@ Brightspace returns the values you need to build your `Registration` object:
+ | `BrightspaceOIDCAuthenticationEndpoint` | `platformAuthenticationLoginUrl` |
+ | `BrightspaceOAuth2AccessTokenUrl` | `platformAuthenticationTokenUrl` |
+ | `BrightspaceKeysetUrl` | `platformJwksUrl` |
++| (not supplied — Brightspace uses the token url) | `platformAudience` (optional, defaults to the token url) |
+ 
+ Brightspace's JWKS endpoint conventionally looks like `https://<your-subdomain>.brightspace.com/d2l/.well-known/jwks`. A `Deployment`'s `EnabledExtensions` array declares which Advantage services are active for it (AGS, Deep Linking, NRPS are the ones this library supports; Deep Linking is always enabled as of recent Brightspace versions regardless of what's requested).
+ 
+diff --git a/TESTPLAN.md b/TESTPLAN.md
+index 4935f4b..76ad606 100644
+--- a/TESTPLAN.md
++++ b/TESTPLAN.md
+@@ -51,6 +51,7 @@ Manual verification checklist for this library, kept current alongside the autom
+ ## Assignment and Grades Service (AGS)
+ 
+ - [x] Access token is requested via client_credentials JWT-bearer grant against the fixture token endpoint and cached (client assertion is a real signed JWT, verified against the tool's own JWKS)
++- [x] Client assertion `aud` defaults to the platform token url, and uses the configured `platformAudience` override when the registration sets one
+ - [x] Line item create/read/update/delete against the fixture AGS endpoint
+ - [x] Score publish against the fixture AGS endpoint (correct `activityProgress`/`gradingProgress` values, Bearer token sent)
+ - [x] Result read against the fixture AGS endpoint
+diff --git a/example/bin/setup.php b/example/bin/setup.php
+index 6c9f66b..516a7a7 100644
+--- a/example/bin/setup.php
++++ b/example/bin/setup.php
+@@ -45,6 +45,11 @@ return [
+     'deployment_id' => 'demo-deployment-1',
+     'tool_kid' => '{$toolKid}',
+     'simulator_kid' => '{$simulatorKid}',
++    // Optional: audience ("aud") for the client assertion sent to the token
++    // endpoint. Omit it to use the token url, which is the spec default and
++    // what nearly every platform expects. Set it only for a platform that
++    // demands a fixed audience of its own; the simulator honours it too.
++    // 'platform_audience' => 'https://platform.example.com/api/lti/authorize',
+ ];
+ PHP;
+ 
+diff --git a/example/simulator/router.php b/example/simulator/router.php
+index c1e1b59..0ec49b4 100644
+--- a/example/simulator/router.php
++++ b/example/simulator/router.php
+@@ -67,7 +67,7 @@ function verifyToolClientAssertion(string $clientAssertion, string $expectedAudi
+     $claims = JWT::decode($clientAssertion, $keySet);
+ 
+     if ($claims->aud !== $expectedAudience) {
+-        throw new \RuntimeException('client_assertion "aud" does not match the token endpoint.');
++        throw new \RuntimeException('client_assertion "aud" does not match the expected audience.');
+     }
+ 
+     if ($claims->iss !== $claims->sub) {
+@@ -245,8 +245,14 @@ if ($method === 'POST' && $path === '/token') {
+ 
+     $config = simulatorConfig();
+ 
++    // Mirrors the tool's Registration: the expected audience is the token
++    // endpoint unless a platform_audience override is configured.
++    $expectedAudience = is_string($config['platform_audience'] ?? null)
++        ? $config['platform_audience']
++        : $config['simulator_base_url'] . '/token';
++
+     try {
+-        verifyToolClientAssertion($clientAssertion, $config['simulator_base_url'] . '/token');
++        verifyToolClientAssertion($clientAssertion, $expectedAudience);
+     } catch (\Throwable $exception) {
+         jsonResponse(400, ['error' => 'invalid_client', 'error_description' => $exception->getMessage()]);
+     }
+diff --git a/example/src/Bootstrap.php b/example/src/Bootstrap.php
+index 7f494b1..85103c2 100644
+--- a/example/src/Bootstrap.php
++++ b/example/src/Bootstrap.php
+@@ -59,6 +59,7 @@ final class Bootstrap
+             $simulatorBaseUrl . '/token',
+             $simulatorBaseUrl . '/jwks',
+             [$toolKeyPair],
++            $config['platform_audience'] ?? null,
+         );
+     }
+ 
+diff --git a/src/Registration/Registration.php b/src/Registration/Registration.php
+index 77cdc54..863dcb9 100644
+--- a/src/Registration/Registration.php
++++ b/src/Registration/Registration.php
+@@ -24,6 +24,15 @@ final class Registration
+     public readonly string $platformAuthenticationTokenUrl;
+     public readonly string $platformJwksUrl;
+ 
++    /**
++     * Audience ("aud") to use in the client-credentials client assertion sent
++     * to the platform's token endpoint. Null means "use
++     * $platformAuthenticationTokenUrl", which is what the 1EdTech Security
++     * Framework specifies and what most platforms expect; set it only for
++     * platforms that require a different, fixed audience value.
++     */
++    public readonly ?string $platformAudience;
++
+     /** @var list<ToolKeyPair> */
+     public readonly array $toolKeyPairs;
+ 
+@@ -39,6 +48,7 @@ final class Registration
+         string $platformAuthenticationTokenUrl,
+         string $platformJwksUrl,
+         array $toolKeyPairs,
++        ?string $platformAudience = null,
+     ) {
+         if (trim($issuer) === '') {
+             throw new InvalidRegistrationException('Registration issuer must not be empty.');
+@@ -88,6 +98,12 @@ final class Registration
+             );
+         }
+ 
++        if ($platformAudience !== null && trim($platformAudience) === '') {
++            throw new InvalidRegistrationException(
++                'Registration platformAudience must not be empty when provided (pass null to use the token url).',
++            );
++        }
++
+         if ($toolKeyPairs === []) {
+             throw new InvalidRegistrationException('Registration must have at least one tool key pair.');
+         }
+@@ -112,9 +128,20 @@ final class Registration
+         $this->platformAuthenticationLoginUrl = $platformAuthenticationLoginUrl;
+         $this->platformAuthenticationTokenUrl = $platformAuthenticationTokenUrl;
+         $this->platformJwksUrl = $platformJwksUrl;
++        $this->platformAudience = $platformAudience;
+         $this->toolKeyPairs = array_values($toolKeyPairs);
+     }
+ 
++    /**
++     * The audience to put in the client assertion when requesting a service
++     * access token: the configured override if there is one, otherwise the
++     * platform's token endpoint (the spec default).
++     */
++    public function accessTokenAudience(): string
++    {
++        return $this->platformAudience ?? $this->platformAuthenticationTokenUrl;
++    }
++
+     public function hasDeployment(string $deploymentId): bool
+     {
+         return in_array($deploymentId, $this->deploymentIds, true);
+diff --git a/src/Services/AccessTokenService.php b/src/Services/AccessTokenService.php
+index d2ac84c..e566739 100644
+--- a/src/Services/AccessTokenService.php
++++ b/src/Services/AccessTokenService.php
+@@ -109,7 +109,7 @@ final class AccessTokenService
+         $claims = [
+             'iss' => $registration->clientId,
+             'sub' => $registration->clientId,
+-            'aud' => $registration->platformAuthenticationTokenUrl,
++            'aud' => $registration->accessTokenAudience(),
+             'iat' => $now,
+             'exp' => $now + self::CLIENT_ASSERTION_TTL_SECONDS,
+             'jti' => bin2hex(random_bytes(16)),
+diff --git a/tests/Integration/Services/AccessTokenServiceTest.php b/tests/Integration/Services/AccessTokenServiceTest.php
+index 8dee94f..e541c4a 100644
+--- a/tests/Integration/Services/AccessTokenServiceTest.php
++++ b/tests/Integration/Services/AccessTokenServiceTest.php
+@@ -42,7 +42,7 @@ final class AccessTokenServiceTest extends TestCase
+         return $this->toolKeyPair ??= (new KeyPairGenerator())->generate('tool-kid');
+     }
+ 
+-    private function registration(): Registration
++    private function registration(?string $platformAudience = null): Registration
+     {
+         return new Registration(
+             self::ISSUER,
+@@ -52,6 +52,7 @@ final class AccessTokenServiceTest extends TestCase
+             $this->server()->baseUrl() . '/token',
+             self::ISSUER . '/d2l/.well-known/jwks',
+             [$this->toolKeyPair()],
++            $platformAudience,
+         );
+     }
+ 
+@@ -117,6 +118,27 @@ final class AccessTokenServiceTest extends TestCase
+         self::assertGreaterThan($claims->iat, $claims->exp);
+     }
+ 
++    public function testClientAssertionUsesTheConfiguredAudienceWhenRegistrationSetsOne(): void
++    {
++        $this->queueTokenResponse(['access_token' => 'token-abc', 'expires_in' => 3600]);
++        $audience = 'https://platform.example.com/api/lti/authorize';
++        $registration = $this->registration($audience);
++
++        $this->service()->getAccessToken($registration, ['scope-a']);
++
++        $requests = $this->server()->receivedRequests('POST', '/token');
++        parse_str($requests[0]['body'], $sent);
++
++        $clientAssertion = $sent['client_assertion'];
++        self::assertIsString($clientAssertion);
++
++        $keySet = JWK::parseKeySet((new JwksBuilder())->build($registration), 'RS256');
++        $claims = JWT::decode($clientAssertion, $keySet);
++
++        self::assertSame($audience, $claims->aud);
++        self::assertNotSame($registration->platformAuthenticationTokenUrl, $claims->aud);
++    }
++
+     public function testCachesTheAccessTokenAndDoesNotRequestASecondTokenForTheSameScopes(): void
+     {
+         $this->queueTokenResponse(['access_token' => 'token-abc', 'expires_in' => 3600]);
+diff --git a/tests/Unit/Registration/RegistrationTest.php b/tests/Unit/Registration/RegistrationTest.php
+index f3dfefe..cb89131 100644
+--- a/tests/Unit/Registration/RegistrationTest.php
++++ b/tests/Unit/Registration/RegistrationTest.php
+@@ -28,6 +28,7 @@ final class RegistrationTest extends TestCase
+         string $tokenUrl = 'https://example.brightspace.com/core/connect/token',
+         string $jwksUrl = 'https://example.brightspace.com/d2l/.well-known/jwks',
+         ?array $toolKeyPairs = null,
++        ?string $platformAudience = null,
+     ): Registration {
+         return new Registration(
+             $issuer,
+@@ -37,9 +38,44 @@ final class RegistrationTest extends TestCase
+             $tokenUrl,
+             $jwksUrl,
+             $toolKeyPairs ?? [$this->keyPair()],
++            $platformAudience,
+         );
+     }
+ 
++    public function testPlatformAudienceDefaultsToTheTokenUrl(): void
++    {
++        $registration = $this->makeRegistration();
++
++        self::assertNull($registration->platformAudience);
++        self::assertSame(
++            'https://example.brightspace.com/core/connect/token',
++            $registration->accessTokenAudience(),
++        );
++    }
++
++    public function testConfiguredPlatformAudienceOverridesTheTokenUrl(): void
++    {
++        $registration = $this->makeRegistration(platformAudience: 'https://platform.example.com/api/lti/authorize');
++
++        self::assertSame('https://platform.example.com/api/lti/authorize', $registration->platformAudience);
++        self::assertSame('https://platform.example.com/api/lti/authorize', $registration->accessTokenAudience());
++    }
++
++    public function testPlatformAudienceNeedNotBeAUrl(): void
++    {
++        $registration = $this->makeRegistration(platformAudience: 'platform-audience-identifier');
++
++        self::assertSame('platform-audience-identifier', $registration->accessTokenAudience());
++    }
++
++    public function testRejectsBlankPlatformAudience(): void
++    {
++        $this->expectException(InvalidRegistrationException::class);
++        $this->expectExceptionMessage('platformAudience must not be empty');
++
++        $this->makeRegistration(platformAudience: '   ');
++    }
++
+     public function testConstructsWithValidValues(): void
+     {
+         $registration = $this->makeRegistration();

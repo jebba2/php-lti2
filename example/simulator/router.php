@@ -67,7 +67,7 @@ function verifyToolClientAssertion(string $clientAssertion, string $expectedAudi
     $claims = JWT::decode($clientAssertion, $keySet);
 
     if ($claims->aud !== $expectedAudience) {
-        throw new \RuntimeException('client_assertion "aud" does not match the token endpoint.');
+        throw new \RuntimeException('client_assertion "aud" does not match the expected audience.');
     }
 
     if ($claims->iss !== $claims->sub) {
@@ -245,8 +245,14 @@ if ($method === 'POST' && $path === '/token') {
 
     $config = simulatorConfig();
 
+    // Mirrors the tool's Registration: the expected audience is the token
+    // endpoint unless a platform_audience override is configured.
+    $expectedAudience = is_string($config['platform_audience'] ?? null)
+        ? $config['platform_audience']
+        : $config['simulator_base_url'] . '/token';
+
     try {
-        verifyToolClientAssertion($clientAssertion, $config['simulator_base_url'] . '/token');
+        verifyToolClientAssertion($clientAssertion, $expectedAudience);
     } catch (\Throwable $exception) {
         jsonResponse(400, ['error' => 'invalid_client', 'error_description' => $exception->getMessage()]);
     }
