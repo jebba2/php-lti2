@@ -1,50 +1,71 @@
 # php-lti / lti1p3
 
-Framework-agnostic PHP library implementing the **tool side** of LTI 1.3 Advantage: OIDC login/launch, Deep Linking 2.0, Assignment and Grades Service (AGS) 2.0, and Names and Role Provisioning Service (NRPS) 2.0. Built primarily against D2L Brightspace as the Platform, but implemented to the 1EdTech specs so it should work with any spec-compliant LMS.
+A PHP library for the tool side of LTI 1.3 Advantage. It handles the OIDC login and launch, Deep Linking 2.0, the Assignment and Grades Service (AGS) 2.0, and the Names and Role Provisioning Service (NRPS) 2.0. It works with any framework, or none.
 
-Status: core feature set (login/launch, AGS, NRPS, Deep Linking) is implemented and covered by an automated test suite using real cryptography and a real local HTTP fixture server (no mocks). It has **not yet been exercised against a live Brightspace tenant** — see [TESTPLAN.md](TESTPLAN.md) for exactly what's verified and what's still pending a real sandbox.
+It was built against D2L Brightspace, but it follows the 1EdTech specs, so it should work with any LMS that follows them too.
+
+All of the features above are implemented and covered by an automated test suite. The tests use real cryptography and a real local HTTP server, with no mocks. The library has not been run against a live Brightspace tenant yet. [TESTPLAN.md](TESTPLAN.md) lists what has been verified and what is still waiting on a sandbox.
 
 ## Requirements
 
-- PHP 8.1+, with the `openssl` and `json` extensions (standard in most PHP installs)
-- Your application supplies its own PSR-7/PSR-17/PSR-18 HTTP implementation and PSR-16 cache backend (see [Design](#design))
+- PHP 8.1 or newer with the `openssl` and `json` extensions. Most PHP installs have both.
+- An HTTP client and message factories that implement PSR-7, PSR-17, and PSR-18. Guzzle 7 covers all three, and it is what this project's tests and example use.
 
 ## Setup
 
-This project uses [Composer](https://getcomposer.org/) for dependency management. Install Composer first if you don't have it, then:
+This project uses [Composer](https://getcomposer.org/) to manage dependencies. Install Composer if you don't have it, then run:
 
 ```bash
 composer install
 ```
 
-Useful composer scripts (see `composer.json` for the full list):
+These Composer scripts cover day-to-day development:
 
 ```bash
 composer test       # run the test suite (PHPUnit)
-composer stan        # static analysis (PHPStan, level 9)
-composer cs          # coding standard check (PHP_CodeSniffer, PSR-12)
-composer cs-fix      # auto-fix coding standard violations
-composer check       # cs + stan + test, in that order
+composer stan       # static analysis (PHPStan, level 9)
+composer cs         # coding standard check (PHP_CodeSniffer, PSR-12)
+composer cs-fix     # fix coding standard violations automatically
+composer check      # cs, then stan, then test
 ```
 
-## Design
+## What your application provides
 
-- **HTTP**: framework-agnostic via PSR-7 (`psr/http-message`), PSR-17 (`psr/http-factory`) for building requests/responses, and PSR-18 (`psr/http-client`) for outbound calls to the Platform. Your application supplies its own implementation of each (Guzzle, Symfony, Laminas, etc.) — this library has no hard dependency on any concrete HTTP stack.
-- **Caching**: ephemeral state (OIDC login state/nonce, replay protection, cached service access tokens) goes through an injected `Psr\SimpleCache\CacheInterface` (PSR-16). Bring whatever cache backend your app already uses.
-- **Persistence**: durable business data (platform/tool registrations) is defined as a repository interface (`PhpLti\Lti1p3\Registration\RegistrationRepositoryInterface`) that your application implements against its own database.
-- **JWT**: signing and verification via [`firebase/php-jwt`](https://github.com/firebase/php-jwt) ^7.0. Only RS256 is accepted for inbound tokens — the JWKS fetcher filters out any non-RSA/non-RS256 key entries before they can ever be used to verify a signature.
+The library has no hard dependency on an HTTP stack, a database, or a cache server. You hand it these pieces:
+
+| You provide | The library uses it for |
+|---|---|
+| A PSR-18 HTTP client and PSR-17 factories | Calls to the platform, and building requests and responses |
+| A class that implements `RegistrationRepositoryInterface` | Looking up platform registrations in your own database |
+| A PSR-16 cache (optional, one is included) | Short-lived data such as login state and access tokens. See [Caching](#caching). |
+
+JWTs are signed and verified with [`firebase/php-jwt`](https://github.com/firebase/php-jwt) ^7.0. Inbound tokens must use RS256. The JWKS fetcher drops any key that isn't RSA with RS256 before it can be used to check a signature.
 
 ## Usage
 
-### 1. Generate a signing key and register with the platform
+The steps below go in order. Each code sample reuses variables from the earlier ones.
+
+### 1. Generate a signing key
 
 ```bash
 php bin/generate-keypair.php --kid=2026-01-key-1
 ```
 
-This prints a JWK — add it to whatever your app publishes at its own JWKS endpoint (built via `JwksBuilder`, see below).
+This writes a private and public key to `working/keys` and prints a JWK. Your tool publishes that JWK at its JWKS URL in step 4.
 
-### 2. Implement `RegistrationRepositoryInterface`
+### 2. Create a cache
+
+```php
+use PhpLti\Lti1p3\Cache\FileCache;
+
+$cache = new FileCache(__DIR__ . '/working/cache');
+```
+
+That is the whole setup. The directory is created if it doesn't exist. Pass this same `$cache` to every class below that asks for one.
+
+If your application already has Redis, Memcached, or another PSR-16 cache, pass that instead. [Caching](#caching) explains when you should.
+
+### 3. Implement `RegistrationRepositoryInterface`
 
 ```php
 use PhpLti\Lti1p3\Registration\{Registration, RegistrationRepositoryInterface, ToolKeyPair};
@@ -53,44 +74,50 @@ final class DatabaseRegistrationRepository implements RegistrationRepositoryInte
 {
     public function findForLoginInitiation(string $issuer, ?string $clientId): ?Registration
     {
-        // Look up your stored platform registration by issuer (+ client_id if given).
-        // Return null if none found or the lookup is ambiguous — never throw.
+        // Look up your stored platform registration by issuer (and client_id if given).
+        // Return null if nothing matches or the match is ambiguous. Never throw.
     }
 
     public function findForLaunch(string $issuer, string $clientId, string $deploymentId): ?Registration
     {
-        // Same lookup, additionally scoped to a specific deployment_id.
+        // The same lookup, also scoped to one deployment_id.
     }
 }
 ```
 
-### 3. Serve your JWKS endpoint
+### 4. Serve your JWKS endpoint
 
 ```php
 use PhpLti\Lti1p3\Security\Jwt\JwksBuilder;
 
-$jwks = (new JwksBuilder())->build($registration); // -> ['keys' => [...]]
-// Return this as the JSON body of your tool's published JWKS URL.
+$jwks = (new JwksBuilder())->build($registration); // ['keys' => [...]]
+// Return this as the JSON body of your tool's JWKS URL.
 ```
 
-### 4. Handle the OIDC login-initiation request
+### 5. Handle the OIDC login request
 
 ```php
 use PhpLti\Lti1p3\OidcLogin\LoginInitiationHandler;
 
 $handler = new LoginInitiationHandler($registrationRepository, $cache, $psr17ResponseFactory);
 $response = $handler->handle($serverRequest, 'https://your-tool.example.com/lti/launch');
-// $response is a PSR-7 302 redirect back to the platform's auth endpoint — return it as-is.
+// $response is a PSR-7 302 redirect to the platform's auth endpoint. Return it unchanged.
 ```
 
-### 5. Handle the launch (platform's POST back to your redirect_uri)
+### 6. Handle the launch
+
+The platform POSTs back to your redirect URI. Validate that request:
 
 ```php
 use PhpLti\Lti1p3\OidcLogin\LaunchValidator;
+use PhpLti\Lti1p3\Security\Jwt\{JwksFetcher, JwtValidator};
 use PhpLti\Lti1p3\Message\LtiResourceLinkRequest;
 use PhpLti\Lti1p3\Message\DeepLinking\LtiDeepLinkingRequest;
 
+$jwksFetcher = new JwksFetcher($httpClient, $requestFactory, $cache);
+$jwtValidator = new JwtValidator($jwksFetcher, $cache);
 $validator = new LaunchValidator($registrationRepository, $cache, $jwtValidator);
+
 $message = $validator->validate($serverRequest); // throws InvalidLaunchException on any failure
 
 if ($message instanceof LtiResourceLinkRequest) {
@@ -100,30 +127,7 @@ if ($message instanceof LtiResourceLinkRequest) {
 }
 ```
 
-`$jwtValidator` is a `PhpLti\Lti1p3\Security\Jwt\JwtValidator`, constructed from a `JwksFetcher` (which needs your PSR-18 client + PSR-17 request factory + PSR-16 cache) and your nonce-tracking cache.
-
-### Configurable access-token audience
-
-When the library requests a service access token, it signs a client assertion whose `aud` claim is, per the 1EdTech Security Framework, the platform's token endpoint. That is the default, and it is right for any platform that does not say otherwise.
-
-Plenty of platforms do say otherwise, and Brightspace is one of them — its registration page publishes a "Brightspace OAuth2 Audience" (`https://api.brightspace.com/auth/token`) that is deliberately not the token url you POST to. Canvas behaves the same way, wanting `https://canvas.instructure.com/login/oauth2/token` regardless of the region-specific token url. Get this wrong and launches keep working perfectly while every AGS and NRPS call comes back `invalid_client`, because launches never touch the token endpoint. Pass the optional final `Registration` argument to override it:
-
-```php
-$registration = new Registration(
-    $issuer,
-    $clientId,
-    $deploymentIds,
-    $platformAuthenticationLoginUrl,
-    $platformAuthenticationTokenUrl,
-    $platformJwksUrl,
-    $toolKeyPairs,
-    platformAudience: 'https://canvas.instructure.com/login/oauth2/token', // optional
-);
-```
-
-Only the `aud` claim changes — the token request still goes to `platformAuthenticationTokenUrl`. `$registration->accessTokenAudience()` returns whichever value is in effect, and `$registration->platformAudience` is `null` when no override is configured. The audience is not required to be a URL and is not subject to the HTTPS check the endpoint urls get, since some platforms use an opaque identifier; it just can't be an empty string.
-
-### 6. Call back into the platform (AGS / NRPS)
+### 7. Call the platform (AGS and NRPS)
 
 ```php
 use PhpLti\Lti1p3\Services\AccessTokenService;
@@ -134,8 +138,8 @@ $accessTokenService = new AccessTokenService($httpClient, $requestFactory, $stre
 $ags = new AssignmentsGradesService($httpClient, $requestFactory, $streamFactory, $accessTokenService);
 $nrps = new NamesRoleService($httpClient, $requestFactory, $accessTokenService);
 
-// $endpoint->lineItemUrl is only set when exactly one line item is
-// associated with this resource link; otherwise create one first via
+// $endpoint->lineItemUrl is only set when exactly one line item belongs to
+// this resource link. Otherwise create one first with
 // $ags->createLineItem($registration, $endpoint, new LineItem(...)).
 if (($endpoint = $message->agsEndpoint()) && $endpoint->lineItemUrl !== null && $message->subject !== null) {
     $ags->publishScore($registration, $endpoint->lineItemUrl, new Score(
@@ -148,11 +152,13 @@ if (($endpoint = $message->agsEndpoint()) && $endpoint->lineItemUrl !== null && 
 }
 
 if ($endpoint = $message->nrpsEndpoint()) {
-    $roster = $nrps->getMembers($registration, $endpoint); // list<Member>, pagination followed automatically
+    $roster = $nrps->getMembers($registration, $endpoint); // list<Member>, follows pagination for you
 }
 ```
 
-### 7. Respond to a Deep Linking request
+If these calls come back `invalid_client` while launches work fine, read [Access-token audience](#access-token-audience).
+
+### 8. Respond to a Deep Linking request
 
 ```php
 use PhpLti\Lti1p3\Message\DeepLinking\LtiDeepLinkingResponse;
@@ -169,60 +175,142 @@ $response = new LtiDeepLinkingResponse(
 
 return (new FormPostRenderer($psr17ResponseFactory, $psr17StreamFactory))->render(
     $message->deepLinkingSettings->deepLinkReturnUrl,
-    ['JWT' => $response->toJwt()], // field name is literally "JWT", not "id_token" — per spec
+    ['JWT' => $response->toJwt()], // the spec names this field "JWT", not "id_token"
 );
 ```
+
+## Caching
+
+The library caches four things. You don't have to manage any of them yourself.
+
+| What | Kept for | Why |
+|---|---|---|
+| The platform's JWKS (public keys) | 1 hour | So a launch doesn't fetch the keys every time |
+| Login state | 5 minutes, and deleted as soon as the launch uses it | Ties a launch to the login request that started it |
+| Nonces | 1 hour | Rejects an id_token that is sent a second time |
+| Service access tokens | The token's lifetime minus 60 seconds | So AGS and NRPS calls don't request a new token each time |
+
+To change a duration, pass it to the constructor: `cacheTtlSeconds` on `JwksFetcher`, `stateTtlSeconds` on `LoginInitiationHandler`, or `nonceTtlSeconds` on `JwtValidator`. For example:
+
+```php
+$jwksFetcher = new JwksFetcher($httpClient, $requestFactory, $cache, cacheTtlSeconds: 600);
+```
+
+### Using the included `FileCache`
+
+`FileCache` keeps one file per cached item in the directory you give it. It needs no server and no configuration, which makes it a good fit for a tool that runs on a single web server.
+
+Three things to know:
+
+1. Keep the directory private. Put it outside your web root and make sure only your application can write to it. `FileCache` creates it with mode `0700`.
+2. Clean it up on a schedule. Each launch leaves one small nonce file behind, and nothing reads it again unless someone replays the launch. Run this once a day from cron or your scheduler:
+
+   ```php
+   use PhpLti\Lti1p3\Cache\FileCache;
+
+   $removed = (new FileCache(__DIR__ . '/working/cache'))->removeExpired();
+   ```
+
+3. Don't use it across several web servers unless they share the directory. The login request and the launch are two separate HTTP requests. If they land on different servers with different disks, the launch won't find its login state and will be rejected.
+
+### Using your own cache
+
+Any PSR-16 `Psr\SimpleCache\CacheInterface` works. Pass it wherever the steps above pass `$cache`:
+
+```php
+$cache = $yourRedisBackedPsr16Cache;
+```
+
+Choose this when you run more than one web server, or when your application already has a cache you'd like to reuse.
+
+The cache has to keep data between requests. An in-memory array cache will not work, because the launch arrives in a different request than the login that stored its state.
+
+Every key the library writes starts with `lti1p3_` and contains only letters, digits, and underscores, hyphens, or dots, so the keys are valid in any PSR-16 backend and are easy to tell apart from your application's own.
+
+## Access-token audience
+
+When the library requests a service access token, it signs a client assertion. The `aud` claim of that assertion defaults to the platform's token endpoint, which is what the 1EdTech Security Framework specifies.
+
+Some platforms want a different value. Brightspace is one: its registration page publishes a "Brightspace OAuth2 Audience" (`https://api.brightspace.com/auth/token`) that is not the token URL you POST to. Canvas does the same and wants `https://canvas.instructure.com/login/oauth2/token` whatever the region-specific token URL is.
+
+This is an easy mistake to miss. Launches never touch the token endpoint, so they keep working while every AGS and NRPS call fails with `invalid_client`. To set the audience, pass the optional last argument to `Registration`:
+
+```php
+$registration = new Registration(
+    $issuer,
+    $clientId,
+    $deploymentIds,
+    $platformAuthenticationLoginUrl,
+    $platformAuthenticationTokenUrl,
+    $platformJwksUrl,
+    $toolKeyPairs,
+    platformAudience: 'https://canvas.instructure.com/login/oauth2/token', // optional
+);
+```
+
+Only the `aud` claim changes. The token request still goes to `platformAuthenticationTokenUrl`. `$registration->accessTokenAudience()` returns the value in effect, and `$registration->platformAudience` is `null` when you haven't set one.
+
+The audience doesn't have to be a URL, because some platforms use an opaque identifier, so it skips the HTTPS check that the endpoint URLs get. It can't be an empty string.
 
 ## CLI helpers (`bin/`)
 
 ### `generate-keypair.php`
 
-Generates a new RSA signing key pair for your tool and prints the corresponding JWK to add to your published JWKS document. This is a one-time (or per key-rotation) setup step, not something the library does at runtime.
+Generates a new RSA signing key pair for your tool and prints the matching JWK. Run it once when you set up the tool, and again whenever you rotate keys. The library never calls it at runtime.
 
 ```bash
 php bin/generate-keypair.php --kid=<kid> [--bits=2048] [--out-dir=working/keys]
 php bin/generate-keypair.php --help
 ```
 
-If this library is installed as a dependency of your application, the same script is available at `vendor/bin/generate-keypair.php` (via Composer's `bin` mechanism).
+For example:
 
-Writes `<kid>.private.pem` (mode `0600`) and `<kid>.public.pem` into `--out-dir` (default: `working/keys` under the current directory), and prints the key's JWK as JSON on stdout. Keep the private key out of version control; feed both PEMs into a `PhpLti\Lti1p3\Registration\ToolKeyPair` when building your `Registration`.
+```bash
+php bin/generate-keypair.php --kid=2026-01-key-1
+php bin/generate-keypair.php --kid=2026-07-key-2 --bits=4096 --out-dir=/etc/my-tool/keys
+```
+
+It writes `<kid>.private.pem` (mode `0600`) and `<kid>.public.pem` into `--out-dir`, which defaults to `working/keys` under the current directory, and prints the key's JWK as JSON on stdout. Keep the private key out of version control. Give both PEM files to a `PhpLti\Lti1p3\Registration\ToolKeyPair` when you build your `Registration`.
+
+When this library is installed as a dependency of your application, Composer makes the same script available at `vendor/bin/generate-keypair.php`.
 
 ## Registering this tool with D2L Brightspace
 
-Brightspace's registration is a two-step process (via its LE API, `/d2l/api/le/(version)/ltiadvantage/...`), done once per environment by a Brightspace admin/developer:
+A Brightspace admin or developer registers the tool once per environment, in two steps, through the LE API (`/d2l/api/le/(version)/ltiadvantage/...`).
 
-**Step 1 — Tool registration.** You provide:
+Step 1 is the tool registration. You provide:
 
 | Field | Value |
 |---|---|
-| `OpenIDConnectLoginUrl` | Your tool's login-initiation endpoint (step 4 above) |
-| `KeysetUrl` | Your tool's JWKS URL (step 3 above) |
-| `RedirectUrls` | Array of authorized launch/redirect URIs (step 5 above) |
+| `OpenIDConnectLoginUrl` | Your tool's login endpoint (step 5 above) |
+| `KeysetUrl` | Your tool's JWKS URL (step 4 above) |
+| `RedirectUrls` | Array of authorized launch and redirect URIs (step 6 above) |
 
-**Step 2 — Deployment**, linked to the registration by `ClientId`, plus which user-data fields to send (`SendUserFirstName`, `SendUserEmail`, `SendD2LUserId`, etc.).
+Step 2 is the deployment. It is linked to the registration by `ClientId`, and it sets which user fields Brightspace sends (`SendUserFirstName`, `SendUserEmail`, `SendD2LUserId`, and so on).
 
-Brightspace returns the values you need to build your `Registration` object:
+Brightspace then returns the values you need to build your `Registration` object:
 
-| Brightspace field | Maps to `Registration` constructor arg |
+| Brightspace field | `Registration` constructor argument |
 |---|---|
 | `BrightspaceIssuer` | `issuer` |
-| (the `ClientId` from your deployment) | `clientId` |
+| The `ClientId` from your deployment | `clientId` |
 | `BrightspaceOIDCAuthenticationEndpoint` | `platformAuthenticationLoginUrl` |
 | `BrightspaceOAuth2AccessTokenUrl` | `platformAuthenticationTokenUrl` |
 | `BrightspaceKeysetUrl` | `platformJwksUrl` |
-| `BrightspaceOAuth2Audience` | `platformAudience` (required for Brightspace — it is not the token url) |
+| `BrightspaceOAuth2Audience` | `platformAudience` (required for Brightspace, because it is not the token URL) |
 
-Brightspace's JWKS endpoint conventionally looks like `https://<your-subdomain>.brightspace.com/d2l/.well-known/jwks`. A `Deployment`'s `EnabledExtensions` array declares which Advantage services are active for it (AGS, Deep Linking, NRPS are the ones this library supports; Deep Linking is always enabled as of recent Brightspace versions regardless of what's requested).
+Brightspace's JWKS endpoint usually looks like `https://<your-subdomain>.brightspace.com/d2l/.well-known/jwks`.
 
-Both the OIDC login URL and redirect URIs **must use HTTPS** — Brightspace rejects `http://` at registration time, and this library enforces the same rule when constructing a `Registration` (with a loopback exception used only by this library's own local test fixtures).
+A deployment's `EnabledExtensions` array says which Advantage services are active for it. This library supports AGS, Deep Linking, and NRPS. Recent Brightspace versions always enable Deep Linking, whatever the request asks for.
+
+The OIDC login URL and the redirect URIs must use HTTPS. Brightspace rejects `http://` at registration time, and this library applies the same rule when you construct a `Registration`. The one exception is loopback addresses, which the library's own local test fixtures use.
 
 ## Known limitations
 
-- No live-Brightspace end-to-end testing yet (needs a sandbox tenant — see [TESTPLAN.md](TESTPLAN.md))
-- `AssignmentsGradesService::listLineItems()` fetches a single page (no `Link` header pagination) — NRPS roster fetches do paginate
-- Submission Review and Platform Notification Service are not implemented (out of scope for this version)
+- No end-to-end testing against a live Brightspace tenant yet. That needs a sandbox; see [TESTPLAN.md](TESTPLAN.md).
+- `AssignmentsGradesService::listLineItems()` fetches a single page and does not follow `Link` header pagination. NRPS roster fetches do paginate.
+- Submission Review and the Platform Notification Service are not implemented in this version.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

@@ -13,6 +13,16 @@ Manual verification checklist for this library, kept current alongside the autom
 - [x] `bin/generate-keypair.php` produces a valid RSA keypair (2048-bit min) and a matching JWKS entry
 - [x] `JwksBuilder` produces a valid JWKS document from a `Registration`'s key set, including after key rotation (multiple `ToolKeyPair`s)
 
+## Built-in file cache
+
+- [x] `FileCache` stores, reads, replaces, deletes, and clears values, and a second `FileCache` on the same directory sees them
+- [x] `FileCache` creates its directory when it is missing
+- [x] Expired items read as missing, for integer and `DateInterval` TTLs, including zero and negative TTLs
+- [x] `removeExpired()` deletes only expired items and reports how many it removed
+- [x] A cache file that is not a valid record is treated as a miss
+- [x] `example/bin/setup.php` works on a fresh copy of the repository (creates `config/` and `working/keys/`)
+- [x] Example tool runs login -> launch -> AGS score -> NRPS roster against the simulator using the library's `FileCache`, with no PHP warnings, and a replayed launch is rejected
+
 ## JWKS fetching
 
 - [x] `JwksFetcher` fetches and parses a real JWKS document from the local fixture Platform server
