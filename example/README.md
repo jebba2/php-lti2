@@ -57,9 +57,8 @@ config/config.php           generated — issuer/client_id/deployment_id/kids (n
 public/                      the tool: login.php, launch.php, jwks.php, AGS/NRPS/Deep-Linking actions
 simulator/router.php         the platform simulator (single php -S router script)
 simulator/src/Database.php   tiny JSON-file "gradebook" backing the simulator's AGS endpoints
-src/Bootstrap.php            wires config + keys into a Registration
+src/Bootstrap.php            wires config + keys into a Registration, and builds the library's FileCache
 src/ConfigRegistrationRepository.php  RegistrationRepositoryInterface for this single-tenant demo
-src/FileCache.php             PSR-16 cache backed by files (needed since php -S is one process per request)
 working/                      generated keys, cache files, simulator's JSON "database" — not committed
 ```
 

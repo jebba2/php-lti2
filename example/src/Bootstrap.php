@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PhpLti\Lti1p3Example;
 
+use PhpLti\Lti1p3\Cache\FileCache;
 use PhpLti\Lti1p3\Registration\Registration;
 use PhpLti\Lti1p3\Registration\ToolKeyPair;
 
