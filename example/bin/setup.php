@@ -16,9 +16,12 @@ const TOOL_KID = 'tool-key-1';
 const SIMULATOR_KID = 'simulator-key-1';
 
 $keysDir = __DIR__ . '/../working/keys';
-if (!is_dir($keysDir) && !mkdir($keysDir, 0700, true) && !is_dir($keysDir)) {
-    fwrite(STDERR, "Could not create {$keysDir}\n");
-    exit(1);
+$configDir = __DIR__ . '/../config';
+foreach ([$keysDir, $configDir] as $directory) {
+    if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+        fwrite(STDERR, "Could not create {$directory}\n");
+        exit(1);
+    }
 }
 
 $generator = new KeyPairGenerator();
@@ -53,7 +56,7 @@ return [
 ];
 PHP;
 
-file_put_contents(__DIR__ . '/../config/config.php', $config);
+file_put_contents($configDir . '/config.php', $config);
 
 echo "Setup complete.\n\n";
 echo "Generated tool and simulator RSA key pairs in working/keys/.\n";
